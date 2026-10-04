@@ -3,7 +3,7 @@ id: "setups/buzz/buzz-hermes"
 title: "Connect Hermes to Buzz"
 summary: "Connect an existing Hermes installation to a Buzz community through its native messaging gateway."
 category: "setups"
-updated: "2026-10-03"
+updated: "2026-10-04"
 targets:
   - "Linux with Hermes and optional systemd persistence"
   - "macOS with Hermes and optional launchd persistence"
@@ -44,17 +44,20 @@ Buzz Desktop/web and the Hermes host connect independently to the same relay. Th
 | Public-identity / NIP-OA helper | https://raw.githubusercontent.com/tonbistudio/buzz-skills/1eeed8cfe81702f0e7d7f257b44103ef49f004a3/hermes-in-buzz/scripts/hermes_buzz_credential_helper.rs | When needed: derive public identity and create owner attestation without private keys in argv. |
 | Block Buzz stable release | https://api.github.com/repos/block/buzz/releases/latest | Only if building the credential helper requires a new pinned Buzz checkout. |
 | Hermes ACP reference | https://hermes-agent.nousresearch.com/docs/user-guide/features/acp | Only if the requested topology is not the native gateway; separate workflow. |
+| Buzz external-launcher contract | https://github.com/block/buzz/blob/main/docs/remote-agents.md | When handing an existing agent from a managed runtime to Hermes: agent-scoped launcher credentials and runtime ownership. |
+| Buzz managed-agent creation UI | https://github.com/block/buzz/blob/main/desktop/src/features/agents/useCreatedAgentChannelAttachment.ts | When checking whether the installed Desktop version actually exposes newly created agent credentials; never assume a key-reveal UI. |
 
 Read this guide and our CLI recipe, then fetch only resources needed for the selected branch using permitted web tools. Resolve relative links against this guide's public URL; save required helpers to known absolute paths and read them before execution. Stop on missing resources or material source conflicts; current official docs govern supported behavior, while our CLI recipe owns CLI installation.
 
 ## Cautions
 
-- Use a dedicated **agent** private key, never the human owner's key, for `BUZZ_PRIVATE_KEY`.
+- Never use the human user's key or Buzz profile as an AI agent identity. `BUZZ_PRIVATE_KEY` must belong to a dedicated **agent**. Verify the credential's subject; a stored key named `PROFILE_PRIVATE_KEY` is not proof of agent ownership. Keeping an existing/default **Hermes profile** does not mean reusing the human's **Buzz profile**. Human credentials used for an explicitly approved administrative action stay outside the agent's runtime configuration.
 - Never ask for a private key, auth tag, or token in chat, an agent question tool, argv, logs, or shell history. The user enters secrets in a real trusted local terminal with hidden input. Stop if input would echo or `getpass` warns that hidden input is unavailable.
 - Store credentials only in the active Hermes profile's secret environment file. Verify Unix mode `0600` or equivalent Windows ACLs; the upstream updater's permission changes are best-effort and do not prove Windows protection.
 - The updater replaces `.env` atomically and creates no backup. Inspect symlinks and file ownership first; do not replace a symlinked/shared credential file without an approved storage-preserving method.
 - Never shell-source `.env`: JSON auth tags can lose their quotes. Read credential presence redacted; use the updater's parser/probe, not a printed environment dump. Its parser supports simple one-line `KEY=value` entries, not full dotenv expansion/export/multiline syntax; stop and resolve incompatible formatting before using it.
 - Keep `allow_all_users=false`, an explicit owner allowlist, and mention gating. Do not loosen these to troubleshoot delivery.
+- Check the installed Buzz adapter before promising Slack-style thread follow-ups. Do not assume it implements `strict_mention` or a per-thread mention exemption. Where only `require_mention` is supported, setting it to `false` applies to every message in every watched channel, not just replies in a thread. Preserve gating unless the owner approves that wider response scope.
 - Ask before downloads/build tools, credential replacement, service changes, restart downtime, or persistent startup changes. Run exactly one gateway per profile; preserve unrelated platform configuration.
 - ACP is not a substitute for this recipe: Buzz may auto-approve ACP tool execution. ACP agents need owner-only access and a separate security review.
 
@@ -84,20 +87,25 @@ Pass: the updater's `--help` works and the helper's `self-test` passes.
 
 ### 3. Store and verify the dedicated agent identity
 
-1. Reuse a matching existing agent identity when available. Otherwise the user creates the intended agent in Buzz Desktop and retains its one-time agent `nsec` locally. Creating an agent or adding it to a channel does not necessarily grant relay admission.
-2. In the user's trusted terminal, run:
+1. Reuse a matching existing **agent** identity when its dedicated credentials are available, never the human profile. Otherwise establish a dedicated keypair and an approved community identity through the current external-agent workflow. Keep the selected Hermes profile unchanged unless a separate Hermes profile was requested. Attach the agent only to the selected Buzz channels; additional channels remain opt-in. Creating an agent or adding it to a channel does not necessarily grant relay admission.
+
+   **Desktop-managed agent is not an exported key.** Buzz Desktop 0.5.26 does not show a one-time agent `nsec` after creation or provide an agent-key reveal/export control. Human Profile → Reveal exposes the human key, not the agent's. Do not tell the user to retrieve an agent key there, or delete/recreate a managed agent to obtain a nonexistent export.
+
+   For an owner-approved handoff from an existing runtime, the launcher's agent-scoped `BUZZ_PRIVATE_KEY` and `BUZZ_AUTH_TAG` may already be available locally. Capture only the selected runtime's credentials inside the consuming program; never print a raw process environment or extract the human keychain identity. Verify the derived public key matches the intended agent and differs from the owner before storing anything. Preserve existing attestation scope. Stop/disable the previous ACP/runtime launcher before enabling the native gateway; two runtimes must not drive the same identity. If no approved credential handoff is available, stop and agree on a separately generated identity/admission workflow rather than inventing an export path.
+2. Do not mistake `buzz agents draft-create` for an owner-side identity/key creation command. It proposes an owner-reviewed form, not a completed identity or exported key; some CLI versions require an existing agent's `BUZZ_AUTH_TAG` even to submit the draft. If direct human-account use returns `agent draft requests require BUZZ_AUTH_TAG`, use Buzz's owner UI to create the dedicated agent. Do not manufacture an attestation or reuse the human profile to bypass this gate.
+3. For a new key entered by the user, run this in their trusted terminal. Skip hidden entry when an approved local agent-credential handoff already populated the profile's secret file:
 
 ```text
 <updater-command> set-agent-key --hermes-home "<resolved-Hermes-home>"
 ```
 
-3. Derive only public values:
+4. Derive only public values:
 
 ```text
 <updater-command> public --hermes-home "<resolved-Hermes-home>" --helper "<absolute-helper-path>"
 ```
 
-4. Compare the resulting `hex`/`npub` with the intended agent in Buzz. If they differ, stop and resolve the identity; do not regenerate keys repeatedly. Independently verify secret-file permissions.
+5. Compare the resulting `hex`/`npub` with the intended agent in Buzz. If they differ, stop and resolve the identity; do not regenerate keys repeatedly. Independently verify secret-file permissions.
 
 Pass: the stored key belongs to the intended dedicated agent and no secret appeared in chat, argv, or logs.
 
@@ -129,7 +137,7 @@ Pass: authenticated channel discovery succeeds for the exact agent and includes 
 
 ### 5. Configure the active Hermes profile
 
-Inspect the installed `hermes config set`/`get` help. Use those commands in the selected profile; do not hand-edit `config.yaml`. Set and read back each value, using supported JSON-array syntax for lists:
+Inspect the installed `hermes config set`/`get` help. Prefer those commands in the selected profile, using supported JSON-array syntax for lists. Preserve configuration symlinks and unrelated comments: if the installed setter rewrites the whole document and drops them, use an approved targeted/comment-preserving write against the authoritative source after backup, then read back every value with `hermes config get` and verify the gateway loader. Existing `platforms.buzz` and documented `gateway.platforms.buzz` shapes are both supported by some versions; extend the profile's current shape rather than create conflicting copies. Configure these values:
 
 | Key | Value |
 | --- | --- |
@@ -191,4 +199,4 @@ Return CLI `reused`/`installed`, topology, selected profile, redacted change sum
 
 ## Source
 
-Adapted from `tonbistudio/buzz-skills`'s `hermes-in-buzz/SKILL.md` at commit `1eeed8cfe81702f0e7d7f257b44103ef49f004a3`, with current official Hermes documentation checked on 2026-10-03. CLI installation is owned by [our recipe](buzz-cli.md); credential helpers remain pinned upstream resources. No target-device installation or connection test was performed while authoring this recipe.
+Adapted from `tonbistudio/buzz-skills`'s `hermes-in-buzz/SKILL.md` at commit `1eeed8cfe81702f0e7d7f257b44103ef49f004a3`, with current official Hermes documentation checked on 2026-10-03. CLI installation is owned by [our recipe](buzz-cli.md); credential helpers remain pinned upstream resources. Credential handoff guidance also uses Buzz's external-launcher contract and managed-agent UI source; recipient-side gateway and reply checks remain required.
